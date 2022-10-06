@@ -18,6 +18,7 @@ from occupancy_field import OccupancyField
 from helper_functions import TFHelper, point_cloud
 from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
+import heapq
 
 
 class Particle(object):
@@ -79,17 +80,17 @@ class ParticleFilter(Node):
         self.scan_topic = "scan"             # the topic where we will get laser scans from
 
         # self.n_particles = 300          # the number of particles to use
-        self.n_particles = 1          # the number of particles to use
+        self.n_particles = 100          # the number of particles to use
 
         # the amount of linear movement before performing an update
         self.d_thresh = 0.2
         # the amount of angular movement before performing an update
         self.a_thresh = math.pi/6
 
-        # self.xy_std = 0.5         # initial cloud x-y   std deviation
-        # self.th_std = math.pi/7   # initial cloud theta std deviation
-        self.xy_std = 0.0         # initial cloud x-y   std deviation
-        self.th_std = 0.0   # initial cloud theta std deviation
+        self.xy_std = 0.5         # initial cloud x-y   std deviation
+        self.th_std = math.pi/7   # initial cloud theta std deviation
+        # self.xy_std = 0.0         # initial cloud x-y   std deviation
+        # self.th_std = 0.0   # initial cloud theta std deviation
 
         # threshold for evaluating whether projected scan points are valid
         self.scan_eval_threshold = 0.1
@@ -158,8 +159,11 @@ class ParticleFilter(Node):
         point_colors = []
         for point in scan_projected:
             # get point dist to nearest obstacle
-            d = self.occupancy_field.get_closest_obstacle_distance(
-                point[0], point[1])
+            try:
+                d = self.occupancy_field.get_closest_obstacle_distance(
+                    point[0], point[1])
+            except:
+                break
 
             # write color of point
             point_colors.append(d)
@@ -200,6 +204,8 @@ class ParticleFilter(Node):
 
         (r, theta) = self.transform_helper.convert_scan_to_polar_in_robot_frame(
             msg, self.base_frame)
+        
+        # visualize current laser scan
         self.pub_color_scan(r, theta)
 
         # clear the current scan so that we can process the next one
@@ -215,13 +221,14 @@ class ParticleFilter(Node):
         elif not self.particle_cloud:
             # now that we have all of the necessary transforms we can update the particle cloud
             self.initialize_particle_cloud(msg.header.stamp)
-        # elif self.moved_far_enough_to_update(new_odom_xy_theta):
-        else:
+        elif self.moved_far_enough_to_update(new_odom_xy_theta):
+        # else:
             # we have moved far enough to do an update!
             self.update_particles_with_odom()    # update based on odometry
             self.update_particles_with_laser(
-                r, theta)   # update based on laser scan
-            self.update_robot_pose()                # update robot's pose based on particles
+                r, theta)                        # update based on laser scan
+            self.update_robot_pose()             # update robot's pose based on particles
+
             # resample particles to focus on areas of high density
             self.resample_particles()
         # publish particles (so things like rviz can see them)
@@ -241,10 +248,22 @@ class ParticleFilter(Node):
         """
         # first make sure that the particle weights are normalized
         self.normalize_particles()
-
+        
+        # # just to get started we will fix the robot's pose to always be at the origin
+        # self.robot_pose = Pose()
         # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
-        # just to get started we will fix the robot's pose to always be at the origin
-        self.robot_pose = Pose()
+        
+        # select and average the best n particles
+        n = 3
+        best_particles = self.n_highest_weighted(n)
+        robot_pose = Particle(np.mean([p.x     for p in best_particles]),
+                              np.mean([p.y     for p in best_particles]),
+                              np.mean([p.theta for p in best_particles])).as_pose()
+        
+
+        # assign best particle's pose to robot_pose
+        self.robot_pose = robot_pose
+        print(self.robot_pose)
 
         self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                         self.odom_pose)
@@ -270,11 +289,11 @@ class ParticleFilter(Node):
             return
 
         for p in self.particle_cloud:
-            p.x += delta[0]
-            p.y += delta[1]
-            p.theta += delta[2]
+            p.x += (delta[0] + np.random.normal(scale=0.01))
+            p.y += (delta[1] + np.random.normal(scale=0.01))
+            p.theta += (delta[2] + np.random.normal(scale=0.1))
         
-        # TODO: add noise?
+        # TODO: modify noise?
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
@@ -284,7 +303,23 @@ class ParticleFilter(Node):
         """
         # make sure the distribution is normalized
         self.normalize_particles()
-        # TODO: fill out the rest of the implementation
+        
+        # select best n particles
+        best_particles = self.n_highest_weighted(3)
+
+    
+    def n_highest_weighted(self, n):
+        """ Returns list of the n particles with highest weights
+
+            Args:
+                n (int): number of particles
+        """
+        # get list of all particle weights
+        weights = np.array([p.w for p in self.particle_cloud])
+        # compute indices of highest weighted particles
+        idx_best_particles = heapq.nlargest(n, range(len(weights)), key=lambda x: weights[x])
+        # slice particle cloud by indices and return
+        return [self.particle_cloud[i] for i in idx_best_particles]
 
     def update_particles_with_laser(self, r, theta):
         """ Updates the particle weights in response to the scan data
@@ -296,27 +331,19 @@ class ParticleFilter(Node):
             # project particle's scan data to map frame
             scan_projected = self.project_scan_to_map(r, theta, p)
 
-            # DEBUG visualize projected scan
-            # point_colors = []
-
             # evaluate raw scan weight (0-300 scale) using thresholding method:
             raw_weight = 0
             for point in scan_projected:
                 # get point dist to nearest obstacle
-                d = self.occupancy_field.get_closest_obstacle_distance(
-                    point[0], point[1])
+                try:
+                    d = self.occupancy_field.get_closest_obstacle_distance(
+                        point[0], point[1])
+                except:
+                    break
 
                 # add threshold result to raw weight
                 below_threshhold = d < self.scan_eval_threshold
                 raw_weight += below_threshhold
-
-                # DEBUG write color of point
-                # point_colors.append(100*below_threshhold)
-                # point_colors.append(d)
-
-            # DEBUG publish projected points
-            # viz_points = np.array([scan_projected[:,0], scan_projected[:, 1], np.zeros(len(theta)), point_colors]).transpose()
-            # self.pcd_pub.publish(point_cloud(viz_points, "map"))
 
             # assign raw weight to particle
             p.w = raw_weight
