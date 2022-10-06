@@ -101,9 +101,10 @@ class ParticleFilter(Node):
         # publish the current particle cloud.  This enables viewing particles in rviz.
         self.particle_pub = self.create_publisher(
             PoseArray, "particlecloud", qos_profile_sensor_data)
-        
+
         # DEBUG: publish Pointcloud2 from particle
-        self.pcd_pub = self.create_publisher(PointCloud2, 'scan_projection', 10)
+        self.pcd_pub = self.create_publisher(
+            PointCloud2, 'scan_projection', 10)
 
         # laser_subscriber listens for data from the lidar
         self.create_subscription(
@@ -136,13 +137,37 @@ class ParticleFilter(Node):
             self.last_scan_timestamp) + Duration(seconds=0.1)
         self.transform_helper.send_last_map_to_odom_transform(
             self.map_frame, self.odom_frame, postdated_timestamp)
-    
-    def pub_scan_projected(self):
+
+    def pub_color_scan(self, r, theta):
         """ This method handles publishing a colored pointcloud of the robot's
             scan data, projected onto the particle filter's guess of the 
             robot's pose in the map frame
         """
-        
+        # if no robot pose define, return none
+        if not hasattr(self, "robot_pose"):
+            return
+
+        # project particle's scan data to map frame
+        robot_pose = self.transform_helper.convert_pose_to_xy_and_theta(self.robot_pose)
+        robot_particle = Particle(robot_pose[0],
+                                  robot_pose[1],
+                                  robot_pose[2])
+        scan_projected = self.project_scan_to_map(r, theta, robot_particle)
+
+        # compute scan point colors based on distance from nearest obstacle:
+        point_colors = []
+        for point in scan_projected:
+            # get point dist to nearest obstacle
+            d = self.occupancy_field.get_closest_obstacle_distance(
+                point[0], point[1])
+
+            # write color of point
+            point_colors.append(d)
+
+        # publish projected points
+        viz_points = np.array([scan_projected[:, 0], scan_projected[:, 1], np.zeros(
+            len(theta)), point_colors]).transpose()
+        self.pcd_pub.publish(point_cloud(viz_points, "map"))
 
     def loop_wrapper(self):
         """ This function takes care of calling the run_loop function repeatedly.
@@ -175,7 +200,8 @@ class ParticleFilter(Node):
 
         (r, theta) = self.transform_helper.convert_scan_to_polar_in_robot_frame(
             msg, self.base_frame)
-        print("r[0]={0}, theta[0]={1}".format(r[0], theta[0]))
+        self.pub_color_scan(r, theta)
+
         # clear the current scan so that we can process the next one
         self.scan_to_process = None
 
@@ -183,10 +209,6 @@ class ParticleFilter(Node):
         new_odom_xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(
             self.odom_pose)
         print("x: {0}, y: {1}, yaw: {2}".format(*new_odom_xy_theta))
-
-        # # DEBUG
-        # self.update_particles_with_laser(
-        #         r, theta)   # update based on laser scan
 
         if not self.current_odom_xy_theta:
             self.current_odom_xy_theta = new_odom_xy_theta
@@ -247,7 +269,12 @@ class ParticleFilter(Node):
             self.current_odom_xy_theta = new_odom_xy_theta
             return
 
-        # TODO: modify particles using delta
+        for p in self.particle_cloud:
+            p.x += delta[0]
+            p.y += delta[1]
+            p.theta += delta[2]
+        
+        # TODO: add noise?
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
@@ -270,13 +297,14 @@ class ParticleFilter(Node):
             scan_projected = self.project_scan_to_map(r, theta, p)
 
             # DEBUG visualize projected scan
-            point_colors = []
+            # point_colors = []
 
             # evaluate raw scan weight (0-300 scale) using thresholding method:
             raw_weight = 0
             for point in scan_projected:
                 # get point dist to nearest obstacle
-                d = self.occupancy_field.get_closest_obstacle_distance(point[0], point[1])
+                d = self.occupancy_field.get_closest_obstacle_distance(
+                    point[0], point[1])
 
                 # add threshold result to raw weight
                 below_threshhold = d < self.scan_eval_threshold
@@ -284,17 +312,15 @@ class ParticleFilter(Node):
 
                 # DEBUG write color of point
                 # point_colors.append(100*below_threshhold)
-                point_colors.append(d)
-            
-            # DEBUG publish projected points
-            viz_points = np.array([scan_projected[:,0], scan_projected[:, 1], np.zeros(len(theta)), point_colors]).transpose()
-            self.pcd_pub.publish(point_cloud(viz_points, "map"))
+                # point_colors.append(d)
 
-            
+            # DEBUG publish projected points
+            # viz_points = np.array([scan_projected[:,0], scan_projected[:, 1], np.zeros(len(theta)), point_colors]).transpose()
+            # self.pcd_pub.publish(point_cloud(viz_points, "map"))
+
             # assign raw weight to particle
             p.w = raw_weight
-        
-            
+
     def project_scan_to_map(self, rs, thetas, p):
         """
         Returns the x and y coordinates of a laser scan, translated as if it
@@ -306,11 +332,12 @@ class ParticleFilter(Node):
         Return:
             (nx2 float np array): the projected scan
         """
-        xs_projected = [p.x + rs[i]*math.cos(p.theta + thetas[i]) for i in range(len(thetas))]
-        ys_projected = [p.y + rs[i]*math.sin(p.theta + thetas[i]) for i in range(len(thetas))]
+        xs_projected = [
+            p.x + rs[i]*math.cos(p.theta + thetas[i]) for i in range(len(thetas))]
+        ys_projected = [
+            p.y + rs[i]*math.sin(p.theta + thetas[i]) for i in range(len(thetas))]
 
-        return np.array([xs_projected,ys_projected]).transpose()
-
+        return np.array([xs_projected, ys_projected]).transpose()
 
     def update_initial_pose(self, msg):
         """ Callback function to handle re-initializing the particle filter based on a pose estimate.
