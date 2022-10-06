@@ -177,7 +177,7 @@ class TFHelper(object):
                                         z=laser_pose.orientation.z,
                                         w=laser_pose.orientation.w)
         laser_yaw = rot.GetRPY()[2]
-        return (msg.ranges, np.linspace(msg.angle_min+laser_yaw, msg.angle_max+laser_yaw, len(msg.ranges)))
+        return (msg.ranges.tolist(), np.linspace(msg.angle_min+laser_yaw, msg.angle_max+laser_yaw, len(msg.ranges)))
 
 def point_cloud(points, parent_frame):
     """ Creates a point cloud message.

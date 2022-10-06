@@ -136,6 +136,13 @@ class ParticleFilter(Node):
             self.last_scan_timestamp) + Duration(seconds=0.1)
         self.transform_helper.send_last_map_to_odom_transform(
             self.map_frame, self.odom_frame, postdated_timestamp)
+    
+    def pub_scan_projected(self):
+        """ This method handles publishing a colored pointcloud of the robot's
+            scan data, projected onto the particle filter's guess of the 
+            robot's pose in the map frame
+        """
+        
 
     def loop_wrapper(self):
         """ This function takes care of calling the run_loop function repeatedly.
@@ -177,12 +184,17 @@ class ParticleFilter(Node):
             self.odom_pose)
         print("x: {0}, y: {1}, yaw: {2}".format(*new_odom_xy_theta))
 
+        # # DEBUG
+        # self.update_particles_with_laser(
+        #         r, theta)   # update based on laser scan
+
         if not self.current_odom_xy_theta:
             self.current_odom_xy_theta = new_odom_xy_theta
         elif not self.particle_cloud:
             # now that we have all of the necessary transforms we can update the particle cloud
             self.initialize_particle_cloud(msg.header.stamp)
-        elif self.moved_far_enough_to_update(new_odom_xy_theta):
+        # elif self.moved_far_enough_to_update(new_odom_xy_theta):
+        else:
             # we have moved far enough to do an update!
             self.update_particles_with_odom()    # update based on odometry
             self.update_particles_with_laser(
@@ -271,18 +283,19 @@ class ParticleFilter(Node):
                 raw_weight += below_threshhold
 
                 # DEBUG write color of point
-                point_colors.append(100*below_threshhold)
+                # point_colors.append(100*below_threshhold)
+                point_colors.append(d)
             
             # DEBUG publish projected points
-            viz_points = np.array([scan_projected[:,0], scan_projected[:, 1], point_colors]).transpose()
-            self.pcd_pub.publish(point_cloud(viz_points, "odom"))
+            viz_points = np.array([scan_projected[:,0], scan_projected[:, 1], np.zeros(len(theta)), point_colors]).transpose()
+            self.pcd_pub.publish(point_cloud(viz_points, "map"))
 
             
             # assign raw weight to particle
             p.w = raw_weight
         
             
-    def project_scan_to_map(rs, thetas, p):
+    def project_scan_to_map(self, rs, thetas, p):
         """
         Returns the x and y coordinates of a laser scan, translated as if it
         originated from a particle
@@ -293,8 +306,8 @@ class ParticleFilter(Node):
         Return:
             (nx2 float np array): the projected scan
         """
-        xs_projected = [p.x + rs[i]*math.sin(p.theta + thetas[i]) for i in range(len(thetas))]
-        ys_projected = [p.y + rs[i]*math.cos(p.theta + thetas[i]) for i in range(len(thetas))]
+        xs_projected = [p.x + rs[i]*math.cos(p.theta + thetas[i]) for i in range(len(thetas))]
+        ys_projected = [p.y + rs[i]*math.sin(p.theta + thetas[i]) for i in range(len(thetas))]
 
         return np.array([xs_projected,ys_projected]).transpose()
 
