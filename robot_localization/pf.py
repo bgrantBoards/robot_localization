@@ -15,7 +15,7 @@ import math
 import time
 import numpy as np
 from occupancy_field import OccupancyField
-from helper_functions import TFHelper, point_cloud
+from helper_functions import TFHelper, draw_random_sample, point_cloud
 from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
 import heapq
@@ -93,7 +93,7 @@ class ParticleFilter(Node):
         # self.th_std = 0.0   # initial cloud theta std deviation
 
         # threshold for evaluating whether projected scan points are valid
-        self.scan_eval_threshold = 0.1
+        self.scan_eval_threshold = 0.2
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(
@@ -254,7 +254,7 @@ class ParticleFilter(Node):
         # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
         
         # select and average the best n particles
-        n = 3
+        n = 30
         best_particles = self.n_highest_weighted(n)
         robot_pose = Particle(np.mean([p.x     for p in best_particles]),
                               np.mean([p.y     for p in best_particles]),
@@ -291,7 +291,8 @@ class ParticleFilter(Node):
         for p in self.particle_cloud:
             p.x += (delta[0] + np.random.normal(scale=0.01))
             p.y += (delta[1] + np.random.normal(scale=0.01))
-            p.theta += (delta[2] + np.random.normal(scale=0.1))
+            # p.theta += (delta[2] + np.random.normal(scale=0.1))
+            p.theta += (delta[2])
         
         # TODO: modify noise?
 
@@ -304,8 +305,9 @@ class ParticleFilter(Node):
         # make sure the distribution is normalized
         self.normalize_particles()
         
-        # select best n particles
-        best_particles = self.n_highest_weighted(3)
+        # resample with helper function
+        weights = [p.w for p in self.particle_cloud]
+        self.particle_cloud = draw_random_sample(self.particle_cloud, weights, self.n_particles)
 
     
     def n_highest_weighted(self, n):
