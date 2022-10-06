@@ -4,6 +4,7 @@
 from urllib.robotparser import RobotFileParser
 from std_msgs.msg import Header
 from geometry_msgs.msg import PoseStamped, Pose, Point, Quaternion, TransformStamped
+from sensor_msgs.msg import PointCloud2, PointField
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from tf2_ros.transform_broadcaster import TransformBroadcaster
@@ -177,3 +178,51 @@ class TFHelper(object):
                                         w=laser_pose.orientation.w)
         laser_yaw = rot.GetRPY()[2]
         return (msg.ranges, np.linspace(msg.angle_min+laser_yaw, msg.angle_max+laser_yaw, len(msg.ranges)))
+
+def point_cloud(points, parent_frame):
+    """ Creates a point cloud message.
+    Args:
+        points: Nx4 array of xyzh positions (h is color hue).
+        parent_frame: frame in which the point cloud is defined
+    Returns:
+        sensor_msgs/PointCloud2 message
+
+    Code source:
+        https://gist.github.com/pgorczak/5c717baa44479fa064eb8d33ea4587e0
+
+    References:
+        http://docs.ros.org/melodic/api/sensor_msgs/html/msg/PointCloud2.html
+        http://docs.ros.org/melodic/api/sensor_msgs/html/msg/PointField.html
+        http://docs.ros.org/melodic/api/std_msgs/html/msg/Header.html
+
+    """
+    # In a PointCloud2 message, the point cloud is stored as an byte 
+    # array. In order to unpack it, we also include some parameters 
+    # which desribes the size of each individual point.
+    ros_dtype = PointField.FLOAT32
+    dtype = np.float32
+    itemsize = np.dtype(dtype).itemsize # A 32-bit float takes 4 bytes.
+
+    data = points.astype(dtype).tobytes() 
+
+    # The fields specify what the bytes represents. The first 4 bytes 
+    # represents the x-coordinate, the next 4 the y-coordinate, etc.
+    fields = [PointField(
+        name=n, offset=i*itemsize, datatype=ros_dtype, count=1)
+        for i, n in enumerate(["x", "y", "z", "hue"])]
+
+    # The PointCloud2 message also has a header which specifies which 
+    # coordinate frame it is represented in. 
+    header = Header(frame_id=parent_frame)
+
+    return PointCloud2(
+        header=header,
+        height=1, 
+        width=points.shape[0],
+        is_dense=False,
+        is_bigendian=False,
+        fields=fields,
+        point_step=(itemsize * 4), # Every point consists of 4 float32s.
+        row_step=(itemsize * 4 * points.shape[0]),
+        data=data
+    )
