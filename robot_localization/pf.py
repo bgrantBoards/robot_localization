@@ -2,7 +2,7 @@
 
 """ This is the starter code for the robot localization project """
 
-from cmath import sin
+from cmath import isnan, sin
 import rclpy
 from threading import Thread
 from rclpy.time import Time
@@ -103,9 +103,9 @@ class ParticleFilter(Node):
         self.particle_pub = self.create_publisher(
             PoseArray, "particlecloud", qos_profile_sensor_data)
 
-        # DEBUG: publish Pointcloud2 from particle
-        self.pcd_pub = self.create_publisher(
-            PointCloud2, 'scan_projection', 10)
+        # # DEBUG: publish Pointcloud2 from particle
+        # self.pcd_pub = self.create_publisher(
+        #     PointCloud2, 'scan_projection', 10)
 
         # laser_subscriber listens for data from the lidar
         self.create_subscription(
@@ -343,7 +343,7 @@ class ParticleFilter(Node):
                     d = self.occupancy_field.get_closest_obstacle_distance(
                         point[0], point[1])
                 except:
-                    break
+                    d = 100
 
                 # add threshold result to raw weight
                 below_threshhold = d < self.scan_eval_threshold
@@ -406,8 +406,6 @@ class ParticleFilter(Node):
         # divide weights by sum of all weights and reset each particle's weight
         for p in self.particle_cloud:
             p.w /= weights.sum()
-        
-        # DEBUG
 
     def publish_particles(self, timestamp):
         particles_conv = []
