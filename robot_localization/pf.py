@@ -80,14 +80,14 @@ class ParticleFilter(Node):
         self.scan_topic = "scan"             # the topic where we will get laser scans from
 
         # self.n_particles = 300          # the number of particles to use
-        self.n_particles = 100          # the number of particles to use
+        self.n_particles = 300          # the number of particles to use
 
         # the amount of linear movement before performing an update
         self.d_thresh = 0.2
         # the amount of angular movement before performing an update
         self.a_thresh = math.pi/6
 
-        self.xy_std = 0.5         # initial cloud x-y   std deviation
+        self.xy_std = 0.7         # initial cloud x-y   std deviation
         self.th_std = math.pi/7   # initial cloud theta std deviation
         # self.xy_std = 0.0         # initial cloud x-y   std deviation
         # self.th_std = 0.0   # initial cloud theta std deviation
@@ -168,10 +168,10 @@ class ParticleFilter(Node):
             # write color of point
             point_colors.append(d)
 
-        # publish projected points
-        viz_points = np.array([scan_projected[:, 0], scan_projected[:, 1], np.zeros(
-            len(theta)), point_colors]).transpose()
-        self.pcd_pub.publish(point_cloud(viz_points, "map"))
+        # # publish projected points
+        # viz_points = np.array([scan_projected[:, 0], scan_projected[:, 1], np.zeros(
+        #     len(theta)), point_colors]).transpose()
+        # self.pcd_pub.publish(point_cloud(viz_points, "map"))
 
     def loop_wrapper(self):
         """ This function takes care of calling the run_loop function repeatedly.
@@ -254,11 +254,13 @@ class ParticleFilter(Node):
         # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
         
         # select and average the best n particles
-        n = 30
+        n = 20
         best_particles = self.n_highest_weighted(n)
         robot_pose = Particle(np.mean([p.x     for p in best_particles]),
                               np.mean([p.y     for p in best_particles]),
                               np.mean([p.theta for p in best_particles])).as_pose()
+        # TODO: average unit vecs to calculate angle mean
+        # TODO: weighted average instead of average of highest weighted
         
 
         # assign best particle's pose to robot_pose
@@ -289,10 +291,10 @@ class ParticleFilter(Node):
             return
 
         for p in self.particle_cloud:
-            p.x += (delta[0] + np.random.normal(scale=0.01))
-            p.y += (delta[1] + np.random.normal(scale=0.01))
-            # p.theta += (delta[2] + np.random.normal(scale=0.1))
-            p.theta += (delta[2])
+            p.x += (delta[0] + np.random.normal(scale=0.03))
+            p.y += (delta[1] + np.random.normal(scale=0.03))
+            p.theta += (delta[2] + np.random.normal(scale=0.3))
+            # p.theta += (delta[2])
         
         # TODO: modify noise?
 
@@ -404,6 +406,8 @@ class ParticleFilter(Node):
         # divide weights by sum of all weights and reset each particle's weight
         for p in self.particle_cloud:
             p.w /= weights.sum()
+        
+        # DEBUG
 
     def publish_particles(self, timestamp):
         particles_conv = []
