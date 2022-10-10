@@ -3,6 +3,7 @@
 """ This is the starter code for the robot localization project """
 
 from cmath import isnan, sin
+from functools import partial
 import rclpy
 from threading import Thread
 from rclpy.time import Time
@@ -20,6 +21,10 @@ from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
 import heapq
 
+## EXPERIMENTAL
+import yappi
+import sys
+
 
 class Particle(object):
     """ Represents a hypothesis (particle) of the robot's pose consisting of x,y and theta (yaw)
@@ -27,7 +32,6 @@ class Particle(object):
             x: the x-coordinate of the hypothesis relative to the map frame
             y: the y-coordinate of the hypothesis relative ot the map frame
             theta: the yaw of the hypothesis relative to the map frame
-            w: the particle weight (the class does not ensure that particle weights are normalized
     """
 
     def __init__(self, x=0.0, y=0.0, theta=0.0, w=1.0):
@@ -36,7 +40,6 @@ class Particle(object):
             y: the y-coordinate of the hypothesis relative ot the map frame
             theta: the yaw of KeyboardInterruptthe hypothesis relative to the map frame
             w: the particle weight (the class does not ensure that particle weights are normalized """
-        self.w = w
         self.theta = theta
         self.x = x
         self.y = y
@@ -46,8 +49,6 @@ class Particle(object):
         q = quaternion_from_euler(0, 0, self.theta)
         return Pose(position=Point(x=self.x, y=self.y, z=0.0),
                     orientation=Quaternion(x=q[0], y=q[1], z=q[2], w=q[3]))
-
-    # TODO: define additional helper functions if needed
 
 
 class ParticleFilter(Node):
@@ -80,17 +81,20 @@ class ParticleFilter(Node):
         self.scan_topic = "scan"             # the topic where we will get laser scans from
 
         # self.n_particles = 300          # the number of particles to use
-        self.n_particles = 300          # the number of particles to use
+        self.n_particles = 300         # the number of particles to use
+
+        # store particle weights as np array field of pf
+        self.weights = np.ones(self.n_particles)
 
         # the amount of linear movement before performing an update
-        self.d_thresh = 0.2
+        self.d_thresh = 0.05
+        # self.d_thresh = 0. # DEBUG
+
         # the amount of angular movement before performing an update
         self.a_thresh = math.pi/6
 
         self.xy_std = 0.7         # initial cloud x-y   std deviation
         self.th_std = math.pi/7   # initial cloud theta std deviation
-        # self.xy_std = 0.0         # initial cloud x-y   std deviation
-        # self.th_std = 0.0   # initial cloud theta std deviation
 
         # threshold for evaluating whether projected scan points are valid
         self.scan_eval_threshold = 0.2
@@ -127,6 +131,7 @@ class ParticleFilter(Node):
         # we are using a thread to work around single threaded execution bottleneck
         thread = Thread(target=self.loop_wrapper)
         thread.start()
+
         self.transform_update_timer = self.create_timer(
             0.05, self.pub_latest_transform)
 
@@ -177,6 +182,20 @@ class ParticleFilter(Node):
         """ This function takes care of calling the run_loop function repeatedly.
             We are using a separate thread to run the loop_wrapper to work around
             issues with single threaded executors in ROS2 """
+        # ## EXPERIMENTAL
+        # yappi.start()
+        # for i in range(0):
+        #     self.run_loop()
+        #     time.sleep(0.1)
+        # yappi.stop()
+
+        # # filter by module object
+        # current_module = sys.modules[__name__]
+        # stats = yappi.get_func_stats(
+        #     filter_callback=lambda x: yappi.module_matches(x, [current_module])
+        # )  # x is a yappi.YFuncStat object
+        # stats.sort("name", "desc").print_all()
+                
         while True:
             self.run_loop()
             time.sleep(0.1)
@@ -249,23 +268,40 @@ class ParticleFilter(Node):
         # first make sure that the particle weights are normalized
         self.normalize_particles()
         
-        # # just to get started we will fix the robot's pose to always be at the origin
-        # self.robot_pose = Pose()
-        # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
-        
-        # select and average the best n particles
-        n = 20
-        best_particles = self.n_highest_weighted(n)
-        robot_pose = Particle(np.mean([p.x     for p in best_particles]),
-                              np.mean([p.y     for p in best_particles]),
-                              np.mean([p.theta for p in best_particles])).as_pose()
+        # # select and average the best n particles
+        # n = 20
+        # best_particles = self.n_highest_weighted(n)
+        # robot_pose = Particle(np.mean([p.x     for p in best_particles]),
+        #                       np.mean([p.y     for p in best_particles]),
+        #                       np.mean([p.theta for p in best_particles])).as_pose()
+
         # TODO: average unit vecs to calculate angle mean
-        # TODO: weighted average instead of average of highest weighted
+        # select the best n particles
+        n = self.n_particles // 5
+        best_particles = self.n_highest_weighted(n)
+
+        # make np array out of best particles
+        best_particles = np.array([[p.x, p.y, p.theta] for p in best_particles])
+        # compute unit vector columns
+        unit_vecs = np.array([np.cos(best_particles[:,2]), np.sin(best_particles[:,2])]).transpose()
+        # stick unit vector columns into matrix of best particles
+        best_particles_uv = np.append(best_particles[:,0:2], unit_vecs, 1)
+
+        # average matrix down the columns
+        average_particle = np.average(best_particles_uv, 0)
+
+        # get angle from average unit vec's compnents
+        average_angle = np.arctan2(average_particle[3], average_particle[2])
+
+        self.robot_pose = Particle(average_particle[0], average_particle[1], average_angle).as_pose()
+
+
+        # # TODO: weighted average instead of average of highest weighted
         
 
-        # assign best particle's pose to robot_pose
-        self.robot_pose = robot_pose
-        print(self.robot_pose)
+        # # assign best particle's pose to robot_pose
+        # self.robot_pose = robot_pose
+        print(self.robot_pose) # DEBUG
 
         self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                         self.odom_pose)
@@ -294,7 +330,6 @@ class ParticleFilter(Node):
             p.x += (delta[0] + np.random.normal(scale=0.03))
             p.y += (delta[1] + np.random.normal(scale=0.03))
             p.theta += (delta[2] + np.random.normal(scale=0.3))
-            # p.theta += (delta[2])
         
         # TODO: modify noise?
 
@@ -308,8 +343,7 @@ class ParticleFilter(Node):
         self.normalize_particles()
         
         # resample with helper function
-        weights = [p.w for p in self.particle_cloud]
-        self.particle_cloud = draw_random_sample(self.particle_cloud, weights, self.n_particles)
+        self.particle_cloud = draw_random_sample(self.particle_cloud, self.weights, self.n_particles)
 
     
     def n_highest_weighted(self, n):
@@ -318,10 +352,8 @@ class ParticleFilter(Node):
             Args:
                 n (int): number of particles
         """
-        # get list of all particle weights
-        weights = np.array([p.w for p in self.particle_cloud])
         # compute indices of highest weighted particles
-        idx_best_particles = heapq.nlargest(n, range(len(weights)), key=lambda x: weights[x])
+        idx_best_particles = heapq.nlargest(n, range(len(self.weights)), key=lambda x: self.weights[x])
         # slice particle cloud by indices and return
         return [self.particle_cloud[i] for i in idx_best_particles]
 
@@ -331,26 +363,18 @@ class ParticleFilter(Node):
             theta: the angle relative to the robot frame for each corresponding reading 
         """
         # shitty for loop method:
-        for p in self.particle_cloud:
+        for idx, p in enumerate(self.particle_cloud):
             # project particle's scan data to map frame
             scan_projected = self.project_scan_to_map(r, theta, p)
 
-            # evaluate raw scan weight (0-300 scale) using thresholding method:
+            # evaluate raw scan weight (0-n_particles scale) using thresholding method:
             raw_weight = 0
-            for point in scan_projected:
-                # get point dist to nearest obstacle
-                try:
-                    d = self.occupancy_field.get_closest_obstacle_distance(
-                        point[0], point[1])
-                except:
-                    d = 100
-
-                # add threshold result to raw weight
-                below_threshhold = d < self.scan_eval_threshold
-                raw_weight += below_threshhold
+            ds = self.occupancy_field.get_closest_obstacle_distance(
+                scan_projected[:,0], scan_projected[:,1])
+            raw_weight = sum(ds < self.scan_eval_threshold)
 
             # assign raw weight to particle
-            p.w = raw_weight
+            self.weights[idx] = raw_weight
 
     def project_scan_to_map(self, rs, thetas, p):
         """
@@ -363,12 +387,10 @@ class ParticleFilter(Node):
         Return:
             (nx2 float np array): the projected scan
         """
-        xs_projected = [
-            p.x + rs[i]*math.cos(p.theta + thetas[i]) for i in range(len(thetas))]
-        ys_projected = [
-            p.y + rs[i]*math.sin(p.theta + thetas[i]) for i in range(len(thetas))]
-
-        return np.array([xs_projected, ys_projected]).transpose()
+        # scan_polar = np.array([rs, thetas])
+        thetas = np.array(thetas) + p.theta # rotate thetas
+        scan_projected = np.array([np.cos(thetas), np.sin(thetas)])*rs+[[p.x], [p.y]]
+        return scan_projected.transpose()
 
     def update_initial_pose(self, msg):
         """ Callback function to handle re-initializing the particle filter based on a pose estimate.
@@ -400,12 +422,8 @@ class ParticleFilter(Node):
 
     def normalize_particles(self):
         """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0) """
-        # get np array of all particle weights
-        weights = np.array([p.w for p in self.particle_cloud])
-
-        # divide weights by sum of all weights and reset each particle's weight
-        for p in self.particle_cloud:
-            p.w /= weights.sum()
+        # divide weights elementwise by sum of all weights
+        self.weights /= sum(self.weights)
 
     def publish_particles(self, timestamp):
         particles_conv = []

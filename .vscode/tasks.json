@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "austin",
+            "file": "robot_localization/pf.py",
+            "label": "Profile main.py"
+        },
+    ],
+    "args": [
+        "--output=/home/bgrant/ros2_ws/src/robot_localization/profiling",
+        "--exposure=10"
+        // "/home/bgrant/ros2_ws/src/robot_localization/profiling",
+    ]
+}
