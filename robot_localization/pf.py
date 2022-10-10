@@ -34,12 +34,11 @@ class Particle(object):
             theta: the yaw of the hypothesis relative to the map frame
     """
 
-    def __init__(self, x=0.0, y=0.0, theta=0.0, w=1.0):
+    def __init__(self, x=0.0, y=0.0, theta=0.0):
         """ Construct a new Particle
             x: the x-coordinate of the hypothesis relative to the map frame
             y: the y-coordinate of the hypothesis relative ot the map frame
-            theta: the yaw of KeyboardInterruptthe hypothesis relative to the map frame
-            w: the particle weight (the class does not ensure that particle weights are normalized """
+            theta: the yaw of KeyboardInterruptthe hypothesis relative to the map frame """
         self.theta = theta
         self.x = x
         self.y = y
@@ -87,8 +86,7 @@ class ParticleFilter(Node):
         self.weights = np.ones(self.n_particles)
 
         # the amount of linear movement before performing an update
-        self.d_thresh = 0.05
-        # self.d_thresh = 0. # DEBUG
+        self.d_thresh = 0.2
 
         # the amount of angular movement before performing an update
         self.a_thresh = math.pi/6
@@ -107,9 +105,9 @@ class ParticleFilter(Node):
         self.particle_pub = self.create_publisher(
             PoseArray, "particlecloud", qos_profile_sensor_data)
 
-        # # DEBUG: publish Pointcloud2 from particle
-        # self.pcd_pub = self.create_publisher(
-        #     PointCloud2, 'scan_projection', 10)
+        # DEBUG: publish Pointcloud2 from particle
+        self.pcd_pub = self.create_publisher(
+            PointCloud2, 'scan_projection', 10)
 
         # laser_subscriber listens for data from the lidar
         self.create_subscription(
@@ -144,39 +142,21 @@ class ParticleFilter(Node):
         self.transform_helper.send_last_map_to_odom_transform(
             self.map_frame, self.odom_frame, postdated_timestamp)
 
-    def pub_color_scan(self, r, theta):
+    def pub_color_scan(self, r, theta, scan_projected, ds):
         """ This method handles publishing a colored pointcloud of the robot's
             scan data, projected onto the particle filter's guess of the 
             robot's pose in the map frame
         """
-        # if no robot pose define, return none
-        if not hasattr(self, "robot_pose"):
-            return
-
-        # project particle's scan data to map frame
-        robot_pose = self.transform_helper.convert_pose_to_xy_and_theta(self.robot_pose)
-        robot_particle = Particle(robot_pose[0],
-                                  robot_pose[1],
-                                  robot_pose[2])
-        scan_projected = self.project_scan_to_map(r, theta, robot_particle)
-
         # compute scan point colors based on distance from nearest obstacle:
         point_colors = []
-        for point in scan_projected:
-            # get point dist to nearest obstacle
-            try:
-                d = self.occupancy_field.get_closest_obstacle_distance(
-                    point[0], point[1])
-            except:
-                break
-
+        for d in ds:
             # write color of point
             point_colors.append(d)
 
-        # # publish projected points
-        # viz_points = np.array([scan_projected[:, 0], scan_projected[:, 1], np.zeros(
-        #     len(theta)), point_colors]).transpose()
-        # self.pcd_pub.publish(point_cloud(viz_points, "map"))
+        # publish projected points
+        viz_points = np.array([scan_projected[:, 0], scan_projected[:, 1], np.zeros(
+            len(theta)), point_colors]).transpose()
+        self.pcd_pub.publish(point_cloud(viz_points, "map"))
 
     def loop_wrapper(self):
         """ This function takes care of calling the run_loop function repeatedly.
@@ -223,9 +203,6 @@ class ParticleFilter(Node):
 
         (r, theta) = self.transform_helper.convert_scan_to_polar_in_robot_frame(
             msg, self.base_frame)
-        
-        # visualize current laser scan
-        self.pub_color_scan(r, theta)
 
         # clear the current scan so that we can process the next one
         self.scan_to_process = None
@@ -241,7 +218,6 @@ class ParticleFilter(Node):
             # now that we have all of the necessary transforms we can update the particle cloud
             self.initialize_particle_cloud(msg.header.stamp)
         elif self.moved_far_enough_to_update(new_odom_xy_theta):
-        # else:
             # we have moved far enough to do an update!
             self.update_particles_with_odom()    # update based on odometry
             self.update_particles_with_laser(
@@ -252,6 +228,15 @@ class ParticleFilter(Node):
             self.resample_particles()
         # publish particles (so things like rviz can see them)
         self.publish_particles(msg.header.stamp)
+
+        # # EXPERIMENTAL: visualize scan
+        # if hasattr(self, 'robot_pose'):
+        #     scan_projected = self.project_scan_to_map(r, theta, Particle(self.transform_helper.convert_pose_to_xy_and_theta(self.robot_pose)))
+        #     # evaluate raw scan weight (0-n_particles scale) using thresholding method:
+        #     ds = self.occupancy_field.get_closest_obstacle_distance(
+        #         scan_projected[:,0], scan_projected[:,1])
+        #     self.pub_color_scan(r, theta, scan_projected, ds)
+        #     print("PUBBB")
 
     def moved_far_enough_to_update(self, new_odom_xy_theta):
         return math.fabs(new_odom_xy_theta[0] - self.current_odom_xy_theta[0]) > self.d_thresh or \
@@ -267,18 +252,11 @@ class ParticleFilter(Node):
         """
         # first make sure that the particle weights are normalized
         self.normalize_particles()
-        
-        # # select and average the best n particles
-        # n = 20
-        # best_particles = self.n_highest_weighted(n)
-        # robot_pose = Particle(np.mean([p.x     for p in best_particles]),
-        #                       np.mean([p.y     for p in best_particles]),
-        #                       np.mean([p.theta for p in best_particles])).as_pose()
 
-        # TODO: average unit vecs to calculate angle mean
         # select the best n particles
-        n = self.n_particles // 5
-        best_particles = self.n_highest_weighted(n)
+        # n = self.n_particles // 2
+        # best_particles = self.n_highest_weighted(n)
+        best_particles = self.particle_cloud
 
         # make np array out of best particles
         best_particles = np.array([[p.x, p.y, p.theta] for p in best_particles])
@@ -286,22 +264,13 @@ class ParticleFilter(Node):
         unit_vecs = np.array([np.cos(best_particles[:,2]), np.sin(best_particles[:,2])]).transpose()
         # stick unit vector columns into matrix of best particles
         best_particles_uv = np.append(best_particles[:,0:2], unit_vecs, 1)
-
         # average matrix down the columns
-        average_particle = np.average(best_particles_uv, 0)
-
+        average_particle = np.average(best_particles_uv, 0, weights=self.weights)
         # get angle from average unit vec's compnents
         average_angle = np.arctan2(average_particle[3], average_particle[2])
-
-        self.robot_pose = Particle(average_particle[0], average_particle[1], average_angle).as_pose()
-
-
-        # # TODO: weighted average instead of average of highest weighted
-        
-
-        # # assign best particle's pose to robot_pose
-        # self.robot_pose = robot_pose
-        print(self.robot_pose) # DEBUG
+        # assign best particle's pose to robot_pose
+        good_particle = Particle(average_particle[0], average_particle[1], average_angle)
+        self.robot_pose = good_particle.as_pose()
 
         self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                         self.odom_pose)
@@ -327,9 +296,9 @@ class ParticleFilter(Node):
             return
 
         for p in self.particle_cloud:
-            p.x += (delta[0] + np.random.normal(scale=0.03))
-            p.y += (delta[1] + np.random.normal(scale=0.03))
-            p.theta += (delta[2] + np.random.normal(scale=0.3))
+            p.x += (delta[0] + np.random.normal(scale=0.02))
+            p.y += (delta[1] + np.random.normal(scale=0.02))
+            p.theta += (delta[2] + np.random.normal(scale=0.1))
         
         # TODO: modify noise?
 
@@ -416,7 +385,7 @@ class ParticleFilter(Node):
 
         # 2. build particle list from the x, y, and theta distributions
         self.particle_cloud = [
-            Particle(x_dist[i], y_dist[i], th_dist[i], 1) for i in range(self.n_particles)]
+            Particle(x_dist[i], y_dist[i], th_dist[i]) for i in range(self.n_particles)]
 
         self.normalize_particles()
 
