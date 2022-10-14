@@ -21,10 +21,6 @@ from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
 import heapq
 
-## EXPERIMENTAL
-import yappi
-import sys
-
 
 class Particle(object):
     """ Represents a hypothesis (particle) of the robot's pose consisting of x,y and theta (yaw)
@@ -105,10 +101,6 @@ class ParticleFilter(Node):
         self.particle_pub = self.create_publisher(
             PoseArray, "particlecloud", qos_profile_sensor_data)
 
-        # DEBUG: publish Pointcloud2 from particle
-        self.pcd_pub = self.create_publisher(
-            PointCloud2, 'scan_projection', 10)
-
         # laser_subscriber listens for data from the lidar
         self.create_subscription(
             LaserScan, self.scan_topic, self.scan_received, 10)
@@ -162,20 +154,6 @@ class ParticleFilter(Node):
         """ This function takes care of calling the run_loop function repeatedly.
             We are using a separate thread to run the loop_wrapper to work around
             issues with single threaded executors in ROS2 """
-        # ## EXPERIMENTAL
-        # yappi.start()
-        # for i in range(0):
-        #     self.run_loop()
-        #     time.sleep(0.1)
-        # yappi.stop()
-
-        # # filter by module object
-        # current_module = sys.modules[__name__]
-        # stats = yappi.get_func_stats(
-        #     filter_callback=lambda x: yappi.module_matches(x, [current_module])
-        # )  # x is a yappi.YFuncStat object
-        # stats.sort("name", "desc").print_all()
-                
         while True:
             self.run_loop()
             time.sleep(0.1)
@@ -229,15 +207,6 @@ class ParticleFilter(Node):
         # publish particles (so things like rviz can see them)
         self.publish_particles(msg.header.stamp)
 
-        # # EXPERIMENTAL: visualize scan
-        # if hasattr(self, 'robot_pose'):
-        #     scan_projected = self.project_scan_to_map(r, theta, Particle(self.transform_helper.convert_pose_to_xy_and_theta(self.robot_pose)))
-        #     # evaluate raw scan weight (0-n_particles scale) using thresholding method:
-        #     ds = self.occupancy_field.get_closest_obstacle_distance(
-        #         scan_projected[:,0], scan_projected[:,1])
-        #     self.pub_color_scan(r, theta, scan_projected, ds)
-        #     print("PUBBB")
-
     def moved_far_enough_to_update(self, new_odom_xy_theta):
         return math.fabs(new_odom_xy_theta[0] - self.current_odom_xy_theta[0]) > self.d_thresh or \
             math.fabs(new_odom_xy_theta[1] - self.current_odom_xy_theta[1]) > self.d_thresh or \
@@ -253,13 +222,8 @@ class ParticleFilter(Node):
         # first make sure that the particle weights are normalized
         self.normalize_particles()
 
-        # select the best n particles
-        # n = self.n_particles // 2
-        # best_particles = self.n_highest_weighted(n)
-        best_particles = self.particle_cloud
-
         # make np array out of best particles
-        best_particles = np.array([[p.x, p.y, p.theta] for p in best_particles])
+        best_particles = np.array([[p.x, p.y, p.theta] for p in self.particle_cloud])
         # compute unit vector columns
         unit_vecs = np.array([np.cos(best_particles[:,2]), np.sin(best_particles[:,2])]).transpose()
         # stick unit vector columns into matrix of best particles
@@ -299,8 +263,6 @@ class ParticleFilter(Node):
             p.x += (delta[0] + np.random.normal(scale=0.02))
             p.y += (delta[1] + np.random.normal(scale=0.02))
             p.theta += (delta[2] + np.random.normal(scale=0.1))
-        
-        # TODO: modify noise?
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
@@ -314,17 +276,6 @@ class ParticleFilter(Node):
         # resample with helper function
         self.particle_cloud = draw_random_sample(self.particle_cloud, self.weights, self.n_particles)
 
-    
-    def n_highest_weighted(self, n):
-        """ Returns list of the n particles with highest weights
-
-            Args:
-                n (int): number of particles
-        """
-        # compute indices of highest weighted particles
-        idx_best_particles = heapq.nlargest(n, range(len(self.weights)), key=lambda x: self.weights[x])
-        # slice particle cloud by indices and return
-        return [self.particle_cloud[i] for i in idx_best_particles]
 
     def update_particles_with_laser(self, r, theta):
         """ Updates the particle weights in response to the scan data
@@ -356,8 +307,10 @@ class ParticleFilter(Node):
         Return:
             (nx2 float np array): the projected scan
         """
-        # scan_polar = np.array([rs, thetas])
-        thetas = np.array(thetas) + p.theta # rotate thetas
+        # rotate thetas
+        thetas = np.array(thetas) + p.theta
+
+        # covert to cartesian and translate
         scan_projected = np.array([np.cos(thetas), np.sin(thetas)])*rs+[[p.x], [p.y]]
         return scan_projected.transpose()
 
