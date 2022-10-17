@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 
-""" This is the starter code for the robot localization project """
-
-from cmath import isnan, sin
-from functools import partial
-import rclpy
+# Universal imports
+import math
+import time
 from threading import Thread
+import numpy as np
+
+# ROS imports
+import rclpy
 from rclpy.time import Time
 from rclpy.node import Node
 from std_msgs.msg import Header
 from sensor_msgs.msg import LaserScan, PointCloud2
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose, Point, Quaternion
 from rclpy.duration import Duration
-import math
-import time
-import numpy as np
+from rclpy.qos import qos_profile_sensor_data
+
+# Local imports
 from occupancy_field import OccupancyField
 from helper_functions import TFHelper, draw_random_sample, point_cloud
-from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
-import heapq
 
 
 class Particle(object):
@@ -54,8 +54,13 @@ class ParticleFilter(Node):
             odom_frame: the name of the odometry coordinate frame (should be "odom" in most cases)
             scan_topic: the name of the scan topic to listen to (should be "scan" in most cases)
             n_particles: the number of particles in the filter
+            weights: list of weights ofr the particle cloud
             d_thresh: the amount of linear movement before triggering a filter update
             a_thresh: the amount of angular movement before triggering a filter update
+            xy_std: standrd deviation in meters  of initial particle cloud location   distribution
+            th_std: standrd deviation in radians of initial particle cloud orientaion distribution
+            xy_noise: x/y     standard deviation in meters  of noise value added to odometry propagation
+            th_noise: angular standard deviation in radians of noise value added to odometry propagation
             pose_listener: a subscriber that listens for new approximate pose estimates (i.e. generated through the rviz GUI)
             particle_pub: a publisher for the particle cloud
             last_scan_timestamp: this is used to keep track of the clock when using bags
@@ -82,13 +87,19 @@ class ParticleFilter(Node):
         self.weights = np.ones(self.n_particles)
 
         # the amount of linear movement before performing an update
-        self.d_thresh = 0.2
+        # self.d_thresh = 0.2
+        self.d_thresh = .1
 
         # the amount of angular movement before performing an update
         self.a_thresh = math.pi/6
 
-        self.xy_std = 0.7         # initial cloud x-y   std deviation
-        self.th_std = math.pi/7   # initial cloud theta std deviation
+        # initial cloud distribution std deviations
+        self.xy_std = 0.5
+        self.th_std = math.pi/7
+
+        # particle propagation noise scale
+        self.xy_noise = 0.05         # (m)
+        self.th_noise = 0.20         # (rad)
 
         # threshold for evaluating whether projected scan points are valid
         self.scan_eval_threshold = 0.2
@@ -259,10 +270,11 @@ class ParticleFilter(Node):
             self.current_odom_xy_theta = new_odom_xy_theta
             return
 
+        # propagate particles by odom delta and add noise
         for p in self.particle_cloud:
-            p.x += (delta[0] + np.random.normal(scale=0.02))
-            p.y += (delta[1] + np.random.normal(scale=0.02))
-            p.theta += (delta[2] + np.random.normal(scale=0.1))
+            p.x += (delta[0] + np.random.normal(scale=self.xy_noise))
+            p.y += (delta[1] + np.random.normal(scale=self.xy_noise))
+            p.theta += (delta[2] + np.random.normal(scale=self.th_noise))
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
@@ -294,7 +306,7 @@ class ParticleFilter(Node):
             raw_weight = sum(ds < self.scan_eval_threshold)
 
             # assign raw weight to particle
-            self.weights[idx] = raw_weight
+            self.weights[idx] = raw_weight**3
 
     def project_scan_to_map(self, rs, thetas, p):
         """
@@ -320,6 +332,9 @@ class ParticleFilter(Node):
         xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(
             msg.pose.pose)
         self.initialize_particle_cloud(msg.header.stamp, xy_theta)
+        # # DEBUG
+        # while True:
+        #     pass
 
     def initialize_particle_cloud(self, timestamp, xy_theta=None):
         """ Initialize the particle cloud.
